@@ -12,8 +12,16 @@
    POST /stickers/expand      聊天记录交给小机之前：你发的表情包 → 【表情包：名字】
    POST /stickers/normalize   小机的回复存下来之前：写成文字的表情包 → 真表情包
 """
+import hashlib
+import hmac
+import io
 import json
+import os
 import sys
+import threading
+import time
+import zipfile
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,9 +32,52 @@ sys.path.insert(0, str(ROOT))
 import labeler  # noqa: E402
 import stickers  # noqa: E402
 
-HOST, PORT = "127.0.0.1", 8767
+HOST = os.environ.get("HOST") or ("0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
+PORT = int(os.environ.get("PORT") or 8767)
 PORT_TRIES = 12
 MAX_JSON = 64 * 1024
+ADMIN_PASSWORD = os.environ.get("STICKER_ADMIN_PASSWORD", "")
+API_TOKEN = os.environ.get("STICKER_API_TOKEN", "")
+SESSION_SECONDS = 7 * 24 * 60 * 60
+LOGIN_WINDOW = 5 * 60
+LOGIN_LIMIT = 8
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_LOCK = threading.Lock()
+SESSION_KEY_LOCK = threading.Lock()
+SESSION_KEY_CACHE: tuple[str, bytes] = ("", b"")
+
+
+def _session_key() -> bytes:
+    """从管理员密码派生稳定的签名密钥，不把密码写进 Cookie。"""
+    global SESSION_KEY_CACHE
+    with SESSION_KEY_LOCK:
+        if SESSION_KEY_CACHE[0] != ADMIN_PASSWORD:
+            SESSION_KEY_CACHE = (
+                ADMIN_PASSWORD,
+                hashlib.pbkdf2_hmac(
+                    "sha256", ADMIN_PASSWORD.encode("utf-8"), b"sticker-shelf-session-v1", 200_000
+                ),
+            )
+        return SESSION_KEY_CACHE[1]
+
+
+def make_session(now: int | None = None) -> str:
+    expires = int(now if now is not None else time.time()) + SESSION_SECONDS
+    payload = str(expires)
+    signature = hmac.new(_session_key(), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def valid_session(token: str, now: int | None = None) -> bool:
+    if not ADMIN_PASSWORD or "." not in token:
+        return False
+    payload, signature = token.rsplit(".", 1)
+    try:
+        expires = int(payload)
+    except ValueError:
+        return False
+    expected = hmac.new(_session_key(), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return expires >= int(now if now is not None else time.time()) and hmac.compare_digest(signature, expected)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -44,9 +95,12 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
         if cors:  # 读接口允许你自己别的端口上的前端来调
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
@@ -55,6 +109,97 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _error(self, message: str, code: int = 400):
         self._json({"error": message}, code)
+
+    def _redirect(self, location: str):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _cookie(self, name: str) -> str:
+        cookies = SimpleCookie(self.headers.get("Cookie") or "")
+        return cookies[name].value if name in cookies else ""
+
+    def _has_session(self) -> bool:
+        return not ADMIN_PASSWORD or valid_session(self._cookie("sticker_session"))
+
+    def _bearer_ok(self) -> bool:
+        if not API_TOKEN:
+            return False
+        scheme, _, token = (self.headers.get("Authorization") or "").partition(" ")
+        return scheme.lower() == "bearer" and hmac.compare_digest(token, API_TOKEN)
+
+    def _read_authorized(self) -> bool:
+        return self._has_session() or self._bearer_ok()
+
+    def _require_json_auth(self, *, allow_token: bool = False) -> bool:
+        if self._has_session() or (allow_token and self._bearer_ok()):
+            return True
+        self._error("请先登录。", 401)
+        return False
+
+    def _login_limited(self) -> bool:
+        address = self.client_address[0]
+        cutoff = time.monotonic() - LOGIN_WINDOW
+        with LOGIN_LOCK:
+            attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(address, []) if stamp >= cutoff]
+            LOGIN_ATTEMPTS[address] = attempts
+            return len(attempts) >= LOGIN_LIMIT
+
+    def _login_failed(self) -> None:
+        with LOGIN_LOCK:
+            LOGIN_ATTEMPTS.setdefault(self.client_address[0], []).append(time.monotonic())
+
+    def _login_succeeded(self) -> None:
+        with LOGIN_LOCK:
+            LOGIN_ATTEMPTS.pop(self.client_address[0], None)
+
+    def _set_session(self):
+        body = json.dumps({"ok": True}).encode("utf-8")
+        secure = (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+        cookie = f"sticker_session={make_session()}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_SECONDS}"
+        if secure:
+            cookie += "; Secure"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _clear_session(self):
+        body = b'{"ok":true}'
+        secure = (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+        cookie = "sticker_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        if secure:
+            cookie += "; Secure"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _export_backup(self):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            if stickers.INDEX_PATH.is_file():
+                archive.write(stickers.INDEX_PATH, "stickers.json")
+            if stickers.IMAGE_DIR.is_dir():
+                for path in stickers.IMAGE_DIR.iterdir():
+                    if path.is_file() and not path.name.startswith("."):
+                        archive.write(path, f"images/{path.name}")
+        body = output.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="sticker-shelf-backup.zip"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _same_origin(self) -> bool:
         """改数据的接口只给本页面用：别的网站不能偷偷替你上传或删除。"""
@@ -85,27 +230,70 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path == "/healthz":
+            return self._json({"ok": True})
+        if path == "/login":
+            if self._has_session():
+                return self._redirect("/")
+            return self._send((ROOT / "web" / "login.html").read_bytes(), "text/html; charset=utf-8")
+        if path == "/stickers/api/export":
+            if not self._require_json_auth():
+                return None
+            return self._export_backup()
         if path == "/stickers/api/list":
-            return self._json({"items": stickers.list_stickers(), "auto_label": labeler.available()})
+            if not self._require_json_auth():
+                return None
+            return self._json({
+                "items": stickers.list_stickers(),
+                "auto_label": labeler.available(),
+                "auth_enabled": bool(ADMIN_PASSWORD),
+            })
         if path == "/stickers/context":
+            if not self._read_authorized():
+                return self._error("请提供登录状态或 API Token。", 401)
             return self._send(stickers.prompt_context().encode("utf-8"), "text/plain; charset=utf-8", cors=True)
         if path.startswith("/stickers/img/"):
+            if not self._read_authorized():
+                return self._error("请提供登录状态或 API Token。", 401)
             found = stickers.image_path(path.rsplit("/", 1)[-1])
             if found is None:
                 return self._error("表情包不存在。", 404)
             file_path, media_type = found
-            return self._send(file_path.read_bytes(), media_type, cors=True, cache="public, max-age=604800")
+            return self._send(file_path.read_bytes(), media_type, cors=True, cache="private, max-age=604800")
+        if ADMIN_PASSWORD and not self._has_session():
+            return self._redirect("/login")
         return super().do_GET()
 
     def do_POST(self):
         path = urlsplit(self.path).path
         try:
+            if path == "/auth/login":
+                if not ADMIN_PASSWORD:
+                    return self._json({"ok": True})
+                if self._login_limited():
+                    return self._error("尝试次数太多，请五分钟后再试。", 429)
+                password = str(self._json_body().get("password") or "")
+                if not hmac.compare_digest(password, ADMIN_PASSWORD):
+                    self._login_failed()
+                    return self._error("密码不对。", 401)
+                self._login_succeeded()
+                return self._set_session()
+            if path == "/auth/logout":
+                if not self._same_origin():
+                    return self._error("只能在表情包小抽屉自己的页面里退出。", 403)
+                return self._clear_session()
             if path == "/stickers/expand":
+                if not self._require_json_auth(allow_token=True):
+                    return None
                 data = self._json_body()
                 role = "assistant" if data.get("role") == "assistant" else "user"
                 return self._json({"text": stickers.expand_for_ai(str(data.get("text") or ""), role)}, cors=True)
             if path == "/stickers/normalize":
+                if not self._require_json_auth(allow_token=True):
+                    return None
                 return self._json({"text": stickers.normalise_reply(str(self._json_body().get("text") or ""))}, cors=True)
+            if not self._require_json_auth():
+                return None
             if not self._same_origin():
                 return self._error("只能在表情包小抽屉自己的页面里修改。", 403)
             if path == "/stickers/api/upload":
@@ -136,8 +324,15 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def serve():
+    if HOST != "127.0.0.1" and not ADMIN_PASSWORD:
+        print("拒绝启动：云端运行必须设置 STICKER_ADMIN_PASSWORD。")
+        sys.exit(2)
+    if HOST != "127.0.0.1" and len(ADMIN_PASSWORD) < 12:
+        print("拒绝启动：云端管理密码至少需要 12 个字符。")
+        sys.exit(2)
     # 端口被占就往后挪，免得撞上别的程序。
-    for port in range(PORT, PORT + PORT_TRIES):
+    port_range = range(PORT, PORT + (1 if os.environ.get("PORT") else PORT_TRIES))
+    for port in port_range:
         try:
             server = ThreadingHTTPServer((HOST, port), Handler)
         except OSError:

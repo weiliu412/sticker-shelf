@@ -11,6 +11,7 @@ AI 只靠「名字」认识表情包：它发 [sticker:u-xxxxxxxxxx]，你的前
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
@@ -18,7 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+# 本地默认放仓库的 data/；云端把 STICKER_DATA_DIR 指向持久卷即可。
+DATA_DIR = Path(os.environ.get("STICKER_DATA_DIR") or ROOT / "data").expanduser().resolve()
 IMAGE_DIR = DATA_DIR / "images"
 INDEX_PATH = DATA_DIR / "stickers.json"
 

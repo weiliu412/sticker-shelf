@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 表情包小抽屉</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f7f4f1; --card:#fffdfb; --ink:#3d3530; --muted:#8b7f77; --line:#e7ddd5; --accent:#b5705a; --danger:#b2483d; }
+  @media (prefers-color-scheme:dark) { :root { --bg:#1f1b19; --card:#2a2522; --ink:#eee6e0; --muted:#a8998f; --line:#3d3531; --accent:#e09a80; --danger:#e8786c; } }
+  * { box-sizing:border-box; }
+  body { min-height:100vh; margin:0; display:grid; place-items:center; padding:20px; background:var(--bg); color:var(--ink); font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  main { width:min(100%, 380px); padding:26px; border:1px solid var(--line); border-radius:20px; background:var(--card); box-shadow:0 12px 36px rgba(70,45,30,.12); }
+  h1 { margin:0 0 4px; font-size:23px; }
+  p { color:var(--muted); margin:0 0 18px; }
+  input,button { width:100%; font:inherit; border-radius:12px; padding:11px 13px; }
+  input { color:inherit; background:var(--bg); border:1px solid var(--line); }
+  button { margin-top:12px; border:0; background:var(--accent); color:white; cursor:pointer; }
+  button:disabled { opacity:.55; }
+  #status { min-height:1.5em; margin:10px 0 0; color:var(--danger); font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>表情包小抽屉</h1>
+  <p>输入你的私人管理密码。</p>
+  <form id="login">
+    <input id="password" type="password" autocomplete="current-password" placeholder="管理密码" required autofocus>
+    <button id="submit" type="submit">打开抽屉</button>
+    <div id="status" role="alert"></div>
+  </form>
+</main>
+<script>
+document.getElementById("login").onsubmit = async (event) => {
+  event.preventDefault();
+  const button = document.getElementById("submit");
+  const status = document.getElementById("status");
+  button.disabled = true; status.textContent = "";
+  try {
+    const response = await fetch("/auth/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({password:document.getElementById("password").value})});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "登录失败。");
+    location.replace("/");
+  } catch (error) { status.textContent = error.message; button.disabled = false; }
+};
+</script>
+</body>
+</html>

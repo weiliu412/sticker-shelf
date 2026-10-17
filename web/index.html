@@ -55,12 +55,33 @@
   .bubble { background: var(--bg); border-radius: 14px; padding: 12px 14px; min-height: 46px; }
   .bubble img.sticker { display: block; max-width: 140px; max-height: 140px; margin: 6px 0; border-radius: 8px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 10px 0 6px; }
+  .topbar { display:flex; gap:10px; align-items:flex-start; justify-content:space-between; }
+  .top-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .top-actions a { text-decoration:none; }
+  @media (max-width: 600px) {
+    main { padding:18px 10px 40px; }
+    .panel { border-radius:13px; padding:12px; }
+    .topbar { display:block; }
+    .top-actions { justify-content:flex-start; margin:10px 0 16px; }
+    .grid { grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; }
+    .item { padding:8px; }
+    button { padding:9px 14px; }
+  }
+  @media (max-width: 380px) { .grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>表情包小抽屉 · Sticker Shelf</h1>
-  <p class="sub">存你自己的表情包，让小机看得懂、也会发。PNG / JPG / GIF / WebP，单张不超过 5 MB，GIF 会动。</p>
+  <div class="topbar">
+    <div>
+      <h1>表情包小抽屉 · Sticker Shelf</h1>
+      <p class="sub">存你自己的表情包，让小机看得懂、也会发。PNG / JPG / GIF / WebP，单张不超过 5 MB，GIF 会动。</p>
+    </div>
+    <div class="top-actions">
+      <a id="backup" href="/stickers/api/export"><button class="ghost" type="button">导出备份</button></a>
+      <button id="logout" class="ghost" type="button" hidden>退出</button>
+    </div>
+  </div>
 
   <section class="panel">
     <div class="row">
@@ -104,6 +125,7 @@ const status = (text, error = false) => { $("status").textContent = text; $("sta
 
 async function api(path, options = {}) {
   const response = await fetch(path, { cache: "no-store", ...options });
+  if (response.status === 401) { location.replace("/login"); throw new Error("请先登录。"); }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `出错了（${response.status}）`);
   return data;
@@ -111,6 +133,7 @@ async function api(path, options = {}) {
 
 async function load() {
   const data = await api("/stickers/api/list");
+  $("logout").hidden = !data.auth_enabled;
   $("auto-note").textContent = data.auto_label
     ? "名字不填的话，会让 Claude 看图自动起一个（GIF 只看第一帧）。描述仍建议自己写清含义和使用时机。"
     : "名字不填的话会先叫「未命名表情」，之后点名字就能改。描述写得越准确，小机越容易在合适的语境里选中它。";
@@ -232,6 +255,11 @@ $("preview").onclick = async () => {
     const data = await api("/stickers/normalize", { method: "POST", body: JSON.stringify({ text: $("sample").value }) });
     StickerShelf.render($("bubble"), data.text, "");
   } catch (error) { status(error.message, true); }
+};
+
+$("logout").onclick = async () => {
+  await fetch("/auth/logout", { method: "POST" });
+  location.replace("/login");
 };
 
 load().catch((error) => status(error.message, true));

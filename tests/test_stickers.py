@@ -6,6 +6,8 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+import zipfile
+from io import BytesIO
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -161,6 +163,86 @@ class ServerTests(TempData):
         with self.assertRaises(HTTPError) as caught:
             self.call("/favicon.ico")
         self.assertEqual(caught.exception.code, 404)
+
+
+class CloudAuthTests(TempData):
+    def setUp(self):
+        super().setUp()
+        self._password, self._token = server.ADMIN_PASSWORD, server.API_TOKEN
+        server.ADMIN_PASSWORD, server.API_TOKEN = "correct horse", "ai-token"
+        server.LOGIN_ATTEMPTS.clear()
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_port}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        server.ADMIN_PASSWORD, server.API_TOKEN = self._password, self._token
+        server.LOGIN_ATTEMPTS.clear()
+        super().tearDown()
+
+    def request(self, path, body=None, headers=None):
+        request = urllib.request.Request(
+            self.base + path,
+            data=body,
+            headers=headers or {},
+            method="POST" if body is not None else "GET",
+        )
+        with urllib.request.urlopen(request) as response:
+            return response.status, response.read(), response.headers
+
+    def login(self):
+        _, _, headers = self.request(
+            "/auth/login",
+            json.dumps({"password": "correct horse"}).encode(),
+            {"Content-Type": "application/json", "X-Forwarded-Proto": "https"},
+        )
+        return headers["Set-Cookie"].split(";", 1)[0], headers["Set-Cookie"]
+
+    def test_session_helpers(self):
+        token = server.make_session(now=100)
+        self.assertTrue(server.valid_session(token, now=101))
+        self.assertFalse(server.valid_session(token + "x", now=101))
+        self.assertFalse(server.valid_session(token, now=100 + server.SESSION_SECONDS + 1))
+
+    def test_private_api_requires_login_and_login_sets_secure_cookie(self):
+        with self.assertRaises(HTTPError) as caught:
+            self.request("/stickers/api/list")
+        self.assertEqual(caught.exception.code, 401)
+        with self.assertRaises(HTTPError) as caught:
+            self.request("/auth/login", json.dumps({"password": "wrong"}).encode())
+        self.assertEqual(caught.exception.code, 401)
+        cookie, full_cookie = self.login()
+        self.assertIn("HttpOnly", full_cookie)
+        self.assertIn("SameSite=Strict", full_cookie)
+        self.assertIn("Secure", full_cookie)
+        status, body, _ = self.request("/stickers/api/list", headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["auth_enabled"])
+
+    def test_api_token_and_backup(self):
+        item = stickers.add_sticker(GIF, "云朵", "手机端开心时使用")
+        with self.assertRaises(HTTPError) as caught:
+            self.request("/stickers/context")
+        self.assertEqual(caught.exception.code, 401)
+        status, body, _ = self.request("/stickers/context", headers={"Authorization": "Bearer ai-token"})
+        self.assertEqual(status, 200)
+        self.assertIn(item["id"], body.decode())
+        status, body, headers = self.request(item["url"], headers={"Authorization": "Bearer ai-token"})
+        self.assertEqual((status, body, headers["Cache-Control"]), (200, GIF, "private, max-age=604800"))
+
+        cookie, _ = self.login()
+        status, body, headers = self.request("/stickers/api/export", headers={"Cookie": cookie})
+        self.assertEqual((status, headers["Content-Type"]), (200, "application/zip"))
+        with zipfile.ZipFile(BytesIO(body)) as archive:
+            self.assertIn("stickers.json", archive.namelist())
+            self.assertIn(f"images/{item['id']}.gif", archive.namelist())
+
+    def test_cross_site_logout_is_rejected(self):
+        with self.assertRaises(HTTPError) as caught:
+            self.request("/auth/logout", b"", {"Origin": "https://evil.example"})
+        self.assertEqual(caught.exception.code, 403)
 
 
 if __name__ == "__main__":

@@ -120,6 +120,29 @@ GIF 只会被看到第一帧，动作在后面几帧才出现的，名字可能�
 全在 `data/` 里：`data/stickers.json`（名字、描述和开关）和 `data/images/`（原图）。
 它们只在你自己电脑上，不在这个仓库里（`.gitignore` 已经排除了）。换电脑时把整个 `data/` 拷过去就行。
 
+### 放到云端，手机也能用（Railway）
+
+推荐把**程序代码**放在 GitHub，把**私人表情包**放在 Railway 的持久存储卷里。这样手机只要打开一个网址、输入密码，就能上传、修改描述和导出备份；图片不会提交到 GitHub。
+
+1. 在 Railway 选择 **Deploy from GitHub repo**，连接这个仓库。
+2. 给服务添加一个 Volume，挂载路径填 `/data`。
+3. 添加这些变量：
+   - `STICKER_DATA_DIR=/data`
+   - `STICKER_ADMIN_PASSWORD=你自己设置的管理密码`（至少 12 个字符，不要写进 GitHub）
+   - `STICKER_API_TOKEN=另一个随机长密码`（可选；以后给聊天程序调用接口时使用）
+4. 生成 Railway 的公开域名，用手机浏览器打开。第一次会先进入密码页。
+5. 定期点页面右上角的「导出备份」，会下载包含原图和描述的 ZIP。
+
+云端模式会强制要求管理密码；没有登录或正确的 API Token，就不能查看图片和语义清单。免费额度和是否需要付款方式以 Railway 当时页面显示为准：如果平台要求绑卡或升级套餐，先不要继续。
+
+聊天程序调用云端接口时，把 API Token 放在请求头里：
+
+```http
+Authorization: Bearer 你的_STICKER_API_TOKEN
+```
+
+不要把管理密码、API Token 或导出的备份提交到 GitHub。
+
 测试：`python -m unittest discover tests`
 
 ---
