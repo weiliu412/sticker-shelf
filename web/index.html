@@ -35,13 +35,17 @@
   .note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
   .status { min-height: 1.4em; font-size: 13px; color: var(--accent); margin: 8px 0 0; }
   .status.error { color: var(--danger); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
   .item { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .item.off { opacity: .55; }
   .thumb { aspect-ratio: 1; display: grid; place-items: center; background: var(--bg); border-radius: 10px; overflow: hidden; }
   .thumb img { width: 100%; height: 100%; object-fit: contain; }
   .name { font-size: 14px; word-break: break-all; cursor: text; border-radius: 6px; padding: 2px 4px; }
   .name:hover { background: var(--accent-soft); }
+  .description { min-height: 3.2em; color: var(--muted); font-size: 12px; line-height: 1.45;
+                 cursor: text; border-radius: 6px; padding: 3px 4px; word-break: break-word; }
+  .description:hover { background: var(--accent-soft); color: var(--ink); }
+  .description.empty { font-style: italic; }
   .id { font: 11px/1.3 ui-monospace, Consolas, monospace; color: var(--muted); user-select: all; }
   .item .row { justify-content: space-between; }
   label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; }
@@ -63,6 +67,9 @@
       <input id="label" type="text" maxlength="40" placeholder="名字（可不填）：比如「开心转圈」「委屈巴巴」">
       <button id="pick">选图片上传</button>
       <input id="file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="description" type="text" maxlength="240" placeholder="含义/使用时机（推荐）：比如「对方委屈时温柔安慰，表示抱住不放」">
     </div>
     <div id="drop" class="drop">也可以把图片拖到这里（可以一次拖好几张）</div>
     <p class="note" id="auto-note"></p>
@@ -105,8 +112,8 @@ async function api(path, options = {}) {
 async function load() {
   const data = await api("/stickers/api/list");
   $("auto-note").textContent = data.auto_label
-    ? "名字不填的话，会让 Claude 看图自动起一个（GIF 只看第一帧）。"
-    : "名字不填的话会先叫「未命名表情」，之后点名字就能改。小机只靠名字认表情包，名字起得准它才用得准。";
+    ? "名字不填的话，会让 Claude 看图自动起一个（GIF 只看第一帧）。描述仍建议自己写清含义和使用时机。"
+    : "名字不填的话会先叫「未命名表情」，之后点名字就能改。描述写得越准确，小机越容易在合适的语境里选中它。";
   renderGrid(data.items);
   $("context").textContent = await (await fetch("/stickers/context", { cache: "no-store" })).text() || "（还没有小机能用的表情包）";
 }
@@ -144,6 +151,17 @@ function renderGrid(items) {
     const id = document.createElement("div");
     id.className = "id"; id.textContent = `[sticker:${item.id}]`; id.title = "这就是小机发它时写的标记";
 
+    const description = document.createElement("div");
+    description.className = "description" + (item.description ? "" : " empty");
+    description.textContent = item.description || "补一句它是什么意思、什么时候用";
+    description.title = "点一下修改语义描述";
+    description.onclick = async () => {
+      const next = prompt("含义/使用时机（小机会依据这句话选择表情包）", item.description || "");
+      if (next === null || next.trim() === item.description) return;
+      try { await api("/stickers/api/update", { method: "POST", body: JSON.stringify({ id: item.id, description: next }) }); await load(); }
+      catch (error) { status(error.message, true); }
+    };
+
     const row = document.createElement("div");
     row.className = "row";
     const toggle = document.createElement("label");
@@ -164,7 +182,7 @@ function renderGrid(items) {
     };
     row.append(toggle, remove);
 
-    card.append(thumb, name, id, row);
+    card.append(thumb, name, description, id, row);
     grid.appendChild(card);
   }
 }
@@ -173,6 +191,7 @@ async function upload(files) {
   files = [...files];
   if (!files.length) return;
   const label = $("label").value.trim();
+  const description = $("description").value.trim();
   $("pick").disabled = true;
   let done = 0;
   try {
@@ -181,13 +200,17 @@ async function upload(files) {
       const data = await api("/stickers/api/upload", {
         method: "POST", body: file,
         // 一次传好几张时，名字只给第一张用，其余的自动起名或之后再改。
-        headers: { "X-Label": encodeURIComponent(done === 0 ? label : "") },
+        headers: {
+          "X-Label": encodeURIComponent(done === 0 ? label : ""),
+          "X-Description": encodeURIComponent(done === 0 ? description : ""),
+        },
       });
       done += 1;
       if (data.auto_labelled) status(`已保存，自动起名：「${data.label}」`);
     }
     status(`上传好了 ${done} 张。`);
     $("label").value = "";
+    $("description").value = "";
   } catch (error) {
     status(`${error.message}${done ? `（前 ${done} 张已保存）` : ""}`, true);
   } finally {
