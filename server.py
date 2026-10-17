@@ -248,6 +248,12 @@ class Handler(SimpleHTTPRequestHandler):
                 "auto_label": labeler.available(),
                 "auth_enabled": bool(ADMIN_PASSWORD),
             })
+        if path == "/stickers/catalog":
+            if not self._read_authorized():
+                return self._error("请提供登录会话或 API Token。", 401)
+            return self._json({
+                "items": [item for item in stickers.list_stickers() if item["ai_enabled"]],
+            })
         if path == "/stickers/context":
             if not self._read_authorized():
                 return self._error("请提供登录状态或 API Token。", 401)

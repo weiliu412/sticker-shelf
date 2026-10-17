@@ -36,7 +36,35 @@ Python 3.9+ standard library only.
 
 ---
 
-## 三、接到你的 AI 上 · Wiring it to your AI
+## 三、接到 ChatGPT 官端（私人 MCP 插件）
+
+云端版现在可以直接作为 ChatGPT 的私人插件使用。它不会搬动聊天记录，也不会创建新的 AI 身份；
+插件只提供两件只读能力：读取允许 AI 使用的表情描述，以及在对话里显示选中的图片/GIF。
+
+部署时除了上一节的变量，再添加：
+
+- `STICKER_MCP_TOKEN`：至少 16 位、只包含字母、数字、`_` 或 `-` 的随机字符串。它会成为私人 MCP 地址的一部分。
+- `STICKER_MEDIA_SECRET`：另一段随机长密码，用来给聊天里的图片地址签名。设置后不要随意更换，否则旧消息里的图片会失效。
+
+插件地址为：
+
+```
+https://你的域名/mcp/你的_STICKER_MCP_TOKEN
+```
+
+在 ChatGPT 网页端进入 Plugins，选择 **Add custom MCP server**，填入上面的地址并选择 No authentication；
+安装后回到原来的普通对话，在输入框输入 `@` 并选择「表情包小抽屉」。第一次可以说：
+
+> 以后在合适的情绪和关系语境里，可以调用表情包小抽屉；每轮最多一张，不要解释表情名称，也不要为了发而发。
+
+插件不会向服务端发送完整聊天记录。模型只会在需要找表情时传入一句不超过 500 字的当前语境概括；
+服务端返回你自己写的名字和描述，由模型选择，再用内嵌卡片显示图片或 GIF。
+
+MCP 端到端测试：`npm run test:mcp`
+
+---
+
+## 四、接到自建聊天前端 / 网关 · Wiring it to your own AI
 
 这是给**自己搭了聊天前端 / 网关**的人用的。抽屉开着的时候，有三条接口：
 
@@ -99,7 +127,7 @@ reply = shelf_post("/stickers/normalize", {"text": reply})
 
 ---
 
-## 四、自动起名（可选）· Auto names (optional)
+## 五、自动起名（可选）· Auto names (optional)
 
 不填名字时，可以让 Claude 看图起一个：
 
@@ -115,7 +143,7 @@ GIF 只会被看到第一帧，动作在后面几帧才出现的，名字可能�
 
 ---
 
-## 五、你的表情包放在哪 · Your data
+## 六、你的表情包放在哪 · Your data
 
 全在 `data/` 里：`data/stickers.json`（名字、描述和开关）和 `data/images/`（原图）。
 它们只在你自己电脑上，不在这个仓库里（`.gitignore` 已经排除了）。换电脑时把整个 `data/` 拷过去就行。

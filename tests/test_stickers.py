@@ -229,6 +229,9 @@ class CloudAuthTests(TempData):
         status, body, _ = self.request("/stickers/context", headers={"Authorization": "Bearer ai-token"})
         self.assertEqual(status, 200)
         self.assertIn(item["id"], body.decode())
+        status, body, _ = self.request("/stickers/catalog", headers={"Authorization": "Bearer ai-token"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["items"][0]["description"], "手机端开心时使用")
         status, body, headers = self.request(item["url"], headers={"Authorization": "Bearer ai-token"})
         self.assertEqual((status, body, headers["Cache-Control"]), (200, GIF, "private, max-age=604800"))
 

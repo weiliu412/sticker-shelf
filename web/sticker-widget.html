@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>表情包</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 100%; background: transparent; }
+      main { display: flex; justify-content: flex-start; min-height: 64px; }
+      img {
+        display: none;
+        width: auto;
+        height: auto;
+        max-width: min(240px, 72vw);
+        max-height: 240px;
+        object-fit: contain;
+        border-radius: 14px;
+      }
+      img.ready { display: block; }
+      #error { display: none; color: #8b5a5a; font-size: 13px; padding: 8px 0; }
+      #error.visible { display: block; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img id="sticker" alt="表情包" />
+      <div id="error">这张表情暂时没有加载出来。</div>
+    </main>
+    <script type="module">
+      const image = document.querySelector("#sticker");
+      const error = document.querySelector("#error");
+
+      const render = (response) => {
+        const payload = response?.structuredContent || response?.result?.structuredContent || response;
+        const sticker = payload?.sticker;
+        if (!sticker?.image_url) return;
+        image.alt = sticker.label || "表情包";
+        image.src = sticker.image_url;
+      };
+
+      image.addEventListener("load", () => {
+        error.classList.remove("visible");
+        image.classList.add("ready");
+      });
+      image.addEventListener("error", () => {
+        image.classList.remove("ready");
+        error.classList.add("visible");
+      });
+
+      let rpcId = 0;
+      const pending = new Map();
+      const notify = (method, params) => window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+      const request = (method, params) => new Promise((resolve, reject) => {
+        const id = ++rpcId;
+        pending.set(id, { resolve, reject });
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      });
+
+      window.addEventListener("message", (event) => {
+        if (event.source !== window.parent) return;
+        const message = event.data;
+        if (!message || message.jsonrpc !== "2.0") return;
+        if (typeof message.id === "number") {
+          const handler = pending.get(message.id);
+          if (!handler) return;
+          pending.delete(message.id);
+          if (message.error) handler.reject(message.error);
+          else handler.resolve(message.result);
+          return;
+        }
+        if (message.method === "ui/notifications/tool-result") render(message.params);
+      }, { passive: true });
+
+      try {
+        await request("ui/initialize", {
+          appInfo: { name: "sticker-shelf-widget", version: "0.2.0" },
+          appCapabilities: {},
+          protocolVersion: "2026-01-26",
+        });
+        notify("ui/notifications/initialized", {});
+      } catch (bridgeError) {
+        console.error("MCP Apps bridge initialization failed", bridgeError);
+      }
+
+      if (window.openai?.toolOutput) render(window.openai.toolOutput);
+    </script>
+  </body>
+</html>
