@@ -1,5 +1,5 @@
 {
-  "client_id": "https://raw.githubusercontent.com/weiliu412/sticker-shelf/main/oauth/kelivo-elevenlabs-client.json",
+  "client_id": "https://cdn.jsdelivr.net/gh/weiliu412/sticker-shelf@main/oauth/kelivo-elevenlabs-client.json",
   "client_name": "Kelivo",
   "client_uri": "https://github.com/Chevey339/kelivo",
   "application_type": "native",
