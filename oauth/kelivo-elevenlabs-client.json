@@ -1,0 +1,17 @@
+{
+  "client_id": "https://raw.githubusercontent.com/weiliu412/sticker-shelf/main/oauth/kelivo-elevenlabs-client.json",
+  "client_name": "Kelivo",
+  "client_uri": "https://github.com/Chevey339/kelivo",
+  "application_type": "native",
+  "redirect_uris": [
+    "psyche.kelivo:/oauth/callback/authorize"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "token_endpoint_auth_method": "none"
+}
