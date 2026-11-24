@@ -1,10 +1,10 @@
 {
-  "client_id": "https://cdn.jsdelivr.net/gh/weiliu412/sticker-shelf@main/oauth/kelivo-elevenlabs-client.json",
+  "client_id": "https://cdn.jsdelivr.net/gh/weiliu412/sticker-shelf@main/oauth/kelivo-elevenlabs-client.json?v=2",
   "client_name": "Kelivo",
   "client_uri": "https://github.com/Chevey339/kelivo",
   "application_type": "native",
   "redirect_uris": [
-    "psyche.kelivo:/oauth/callback/authorize"
+    "http://127.0.0.1:3000/callback"
   ],
   "grant_types": [
     "authorization_code",
