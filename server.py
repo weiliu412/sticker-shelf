@@ -34,7 +34,8 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*a, directory=str(ROOT / "web"), **kw)
 
     def log_message(self, fmt, *args):  # 只打接口，静态文件不刷屏
-        if "/stickers/" in (args[0] if args else "") and "/stickers/img/" not in (args[0] if args else ""):
+        request = str(args[0]) if args else ""
+        if "/stickers/" in request and "/stickers/img/" not in request:
             super().log_message(fmt, *args)
 
     # ── 小工具 ──
@@ -110,18 +111,20 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/stickers/api/upload":
                 raw = self._body(stickers.MAX_BYTES + 1)
                 label = unquote(self.headers.get("X-Label") or "")
+                description = unquote(self.headers.get("X-Description") or "")
                 auto = False
                 if not stickers.clean_label(label):
                     kind = stickers.sniff_image(raw)
                     label = labeler.suggest_label(raw, kind[1]) if kind and len(raw) <= stickers.MAX_BYTES else ""
                     auto = bool(label)
-                return self._json({**stickers.add_sticker(raw, label), "auto_labelled": auto}, 201)
+                return self._json({**stickers.add_sticker(raw, label, description), "auto_labelled": auto}, 201)
             if path == "/stickers/api/update":
                 data = self._json_body()
                 enabled = data.get("ai_enabled")
                 return self._json(stickers.update_sticker(
                     str(data.get("id") or ""),
                     label=data["label"] if isinstance(data.get("label"), str) else None,
+                    description=data["description"] if isinstance(data.get("description"), str) else None,
                     ai_enabled=enabled if isinstance(enabled, bool) else None,
                 ))
             if path == "/stickers/api/delete":

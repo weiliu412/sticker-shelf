@@ -25,6 +25,7 @@ INDEX_PATH = DATA_DIR / "stickers.json"
 MAX_BYTES = 5 * 1024 * 1024
 MAX_STICKERS = 300
 MAX_LABEL = 40
+MAX_DESCRIPTION = 240
 # AI 每轮都会看到可选清单，太长会稀释上下文，所以只给最近的这么多个。
 PROMPT_LIMIT = 80
 
@@ -67,6 +68,11 @@ def clean_label(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:MAX_LABEL]
 
 
+def clean_description(value: object) -> str:
+    """整理用户写的语义描述；保留一句紧凑的自然语言给 AI 检索和理解。"""
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:MAX_DESCRIPTION]
+
+
 def sniff_image(raw: bytes) -> tuple[str, str] | None:
     """按文件头认格式，不信文件名：(扩展名, MIME)。"""
     for magic, extension, media_type in IMAGE_TYPES:
@@ -98,6 +104,8 @@ def public(item: dict) -> dict:
     return {
         "id": item["id"],
         "label": item["label"],
+        # 旧版 stickers.json 没有 description；读旧数据时自然回退为空串。
+        "description": clean_description(item.get("description")),
         "url": f"/stickers/img/{item['id']}",
         "media_type": item["media_type"],
         "ai_enabled": bool(item.get("ai_enabled", True)),
@@ -125,7 +133,7 @@ def image_path(sticker_id: str) -> tuple[Path, str] | None:
     return (path, item["media_type"]) if path.is_file() else None
 
 
-def add_sticker(raw: bytes, label: str = "") -> dict:
+def add_sticker(raw: bytes, label: str = "", description: str = "") -> dict:
     """保存一张新表情包；label 为空时名字先记成「未命名表情」，可以之后改。"""
     if not raw:
         raise StickerError("图片是空的。", 422)
@@ -147,6 +155,7 @@ def add_sticker(raw: bytes, label: str = "") -> dict:
         temporary.replace(IMAGE_DIR / file_name)
         item = {
             "id": sticker_id, "label": clean_label(label) or "未命名表情", "file": file_name,
+            "description": clean_description(description),
             "media_type": media_type, "ai_enabled": True, "created_at": now_iso(),
         }
         items.append(item)
@@ -154,7 +163,12 @@ def add_sticker(raw: bytes, label: str = "") -> dict:
     return public(item)
 
 
-def update_sticker(sticker_id: str, label: str | None = None, ai_enabled: bool | None = None) -> dict:
+def update_sticker(
+    sticker_id: str,
+    label: str | None = None,
+    description: str | None = None,
+    ai_enabled: bool | None = None,
+) -> dict:
     with LOCK:
         items = _load()
         item = next((entry for entry in items if entry["id"] == sticker_id), None)
@@ -162,6 +176,8 @@ def update_sticker(sticker_id: str, label: str | None = None, ai_enabled: bool |
             raise StickerError("表情包不存在。", 404)
         if label is not None:
             item["label"] = clean_label(label) or "未命名表情"
+        if description is not None:
+            item["description"] = clean_description(description)
         if ai_enabled is not None:
             item["ai_enabled"] = bool(ai_enabled)
         _save(items)
@@ -191,12 +207,17 @@ def labels(*, ai_only: bool = False) -> dict[str, str]:
 
 
 def prompt_context() -> str:
-    """接在系统提示末尾：发表情包的规矩 + AI 可以选的清单（编号＝名字）。没有可用的就返回空字符串。"""
-    choices = list(labels(ai_only=True).items())[-PROMPT_LIMIT:]
+    """接在系统提示末尾：发表情包的规矩 + AI 可以选的语义清单。没有可用的就返回空字符串。"""
+    with LOCK:
+        choices = [public(item) for item in _load() if item.get("ai_enabled", True)][-PROMPT_LIMIT:]
     if not choices:
         return ""
-    catalog = "；".join(f"{sticker_id}＝{label}" for sticker_id, label in choices)
-    return f"{PROMPT_RULES}\n只可从以下表情包中选择（编号＝名字）：{catalog}"
+    catalog = "\n".join(
+        f"- {item['id']}＝{item['label']}"
+        + (f"；含义/使用时机：{item['description']}" if item["description"] else "")
+        for item in choices
+    )
+    return f"{PROMPT_RULES}\n只可从以下表情包中选择。优先依据含义和使用时机匹配当前对话：\n{catalog}"
 
 
 def expand_for_ai(text: str, role: str = "user") -> str:
@@ -209,15 +230,20 @@ def expand_for_ai(text: str, role: str = "user") -> str:
     text = text or ""
     if not MARKER_PATTERN.search(text):
         return text
-    known = labels()
+    with LOCK:
+        known = {item["id"]: public(item) for item in _load()}
 
     def replace(match: re.Match) -> str:
         sticker_id = match.group(1)
-        if sticker_id not in known:
+        item = known.get(sticker_id)
+        if item is None:
             return "【一张已删除的表情包】"
         if role == "assistant":
             return f"[sticker:{sticker_id}]"
-        return f"【表情包：{known[sticker_id]}】"
+        meaning = item["label"]
+        if item["description"]:
+            meaning += f"；含义/使用时机：{item['description']}"
+        return f"【表情包：{meaning}】"
 
     return MARKER_PATTERN.sub(replace, text)
 
